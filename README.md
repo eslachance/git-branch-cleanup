@@ -31,4 +31,4 @@ This CLI tool is published on NPM and can be run directly using NPX. Make sure y
 Run the following command from the root of any Git repository (i.e., a folder containing a `.git` directory):
 
 ```bash
-npx git-cleanup-cli
+npx git-branch-cleanup
