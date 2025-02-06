@@ -1,6 +1,6 @@
 {
   "name": "git-branch-cleanup",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "main": "src/index.js",
   "bin": {
     "git-branch-cleanup": "src/index.js"
