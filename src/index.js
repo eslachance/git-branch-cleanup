@@ -5,19 +5,23 @@
  * A Node.js CLI tool to help clean up local Git branches whose upstream is missing
  * or has been deleted.
  *
- * This script lists local branches that either:
- *   - have no upstream branch, or
- *   - have an upstream branch that is marked as "gone"
+ * It now also detects your repository’s default main branch:
+ *   - It checks for local "main" and "master" branches.
+ *   - If both exist, it prompts you to choose which one you actually use.
  *
- * It then offers these options:
+ * Right before cleanup, if you’re not currently on that default branch,
+ * you’re prompted to either switch to it (so you can clean up the other branches)
+ * or to remain on your current branch (in which case it is excluded from cleanup).
+ *
+ * Cleanup options:
  *   1. Delete all such local branches (safe delete)
  *   2. Delete all such local branches (forced delete)
- *   3. Delete all such local branches except "main"/"master" (safe delete)
+ *   3. Delete all such local branches except your default branch (safe delete)
  *   4. Cancel
  *
- * In the safe deletion process, if any branch cannot be deleted because it is not
- * fully merged, a friendly message is printed. Once the safe deletion process is
- * finished, the user is asked if they want to force delete the branches that failed.
+ * In safe deletion mode, if a branch isn’t fully merged, a friendly error is shown.
+ * When the safe deletion process completes, you’re asked whether you’d like to force-delete
+ * those branches that failed the safe deletion.
  *
  * To install the "prompt" module, run:
  *    npm install prompt
@@ -43,17 +47,52 @@ function getCurrentBranch(callback) {
 }
 
 /**
+ * Check if a branch exists by listing it.
+ */
+function branchExists(branchName, callback) {
+  exec(`git branch --list ${branchName}`, (err, stdout, stderr) => {
+    if (err) return callback(false);
+    callback(stdout.trim() !== "");
+  });
+}
+
+/**
+ * Determine the default main branch.
+ * If both "main" and "master" exist, prompt the user which one is their default.
+ */
+function getDefaultMainBranch(callback) {
+  branchExists("main", (mainExists) => {
+    branchExists("master", (masterExists) => {
+      if (mainExists && masterExists) {
+        prompt.start();
+        prompt.get({
+          name: 'default',
+          description: "Both 'main' and 'master' branches exist. Which branch do you use as your default? (enter 'main' or 'master')",
+          required: true,
+          pattern: /^(main|master)$/i,
+          message: "Please enter 'main' or 'master'"
+        }, (err, result) => {
+          if (err) return callback(err);
+          callback(null, result.default.toLowerCase());
+        });
+      } else if (mainExists) {
+        callback(null, "main");
+      } else if (masterExists) {
+        callback(null, "master");
+      } else {
+        // Neither exists; no default main branch found.
+        callback(null, null);
+      }
+    });
+  });
+}
+
+/**
  * Get all local branches that either:
- *  - have no upstream branch, or
- *  - have an upstream branch that is marked as "gone"
+ *   - have no upstream branch, or
+ *   - have an upstream branch that is marked as "gone"
  *
- * The output of "git branch -vv" typically shows lines like:
- *
- *    * feature   1a2b3c4 [origin/feature] Commit message...
- *      bugfix    5d6e7f8 Commit message...
- *      oldfeat   9a8b7c6 [origin/oldfeat: gone] Some commit message...
- *
- * In the above, "bugfix" has no tracking info and "oldfeat" has an upstream that is gone.
+ * Uses "git branch -vv" and inspects the tracking info.
  */
 function getDetachedBranches(callback) {
   exec('git branch -vv', (error, stdout, stderr) => {
@@ -63,17 +102,16 @@ function getDetachedBranches(callback) {
     const lines = stdout.split('\n');
     const detachedBranches = [];
     // Regex explanation:
-    //   ^\*?\s*           -> optional '*' for the current branch plus any whitespace
+    //   ^\*?\s*           -> optional '*' (for the current branch) and any whitespace
     //   (\S+)             -> branch name (non-space characters)
     //   \s+[a-f0-9]+      -> commit hash
-    //   \s+(\[([^\]]+)\])? -> optional tracking info in brackets.
+    //   \s+(\[([^\]]+)\])? -> optional tracking info in brackets
     const branchLineRegex = /^\*?\s*(\S+)\s+[a-f0-9]+\s+(\[([^\]]+)\])?/;
     lines.forEach(line => {
       const match = line.match(branchLineRegex);
       if (match) {
         const branchName = match[1];
         const trackingInfo = match[3]; // may be undefined if no tracking info exists
-        // If there is no tracking info, or if it includes "gone", then mark it.
         if (!trackingInfo || trackingInfo.includes('gone')) {
           detachedBranches.push(branchName);
         }
@@ -90,8 +128,8 @@ function getDetachedBranches(callback) {
  * @param {boolean} forced - If true, use forced deletion (-D); otherwise, use safe deletion (-d).
  * @param {function} callback - Called when deletion is complete.
  *                              The callback is passed (error, failedBranches)
- *                              where failedBranches is an array of branch names that
- *                              could not be deleted (in safe deletion mode).
+ *                              where failedBranches is an array of branches that could not be deleted
+ *                              (only applicable in safe deletion mode).
  */
 function deleteBranches(branches, forced, callback) {
   let index = 0;
@@ -128,6 +166,55 @@ function deleteBranches(branches, forced, callback) {
   deleteNext();
 }
 
+/**
+ * Before performing deletion, check if the current branch matches the default main branch.
+ * If not, prompt the user:
+ *   "You are not currently on the '<defaultMain>' branch.
+ *    Would you like to switch to '<defaultMain>' before cleanup?
+ *      1. Yes, switch to '<defaultMain>' branch to clean up this one.
+ *      2. No, stay on this branch and ignore it in the cleanup."
+ *
+ * Depending on the choice:
+ *   - Option 1: switch to the default main branch.
+ *   - Option 2: remove the current branch from the cleanup list.
+ */
+function preCleanupCheck(branchesToDelete, defaultMain, callback) {
+  // If no default main branch is defined, or if the cleanup options already exclude it, continue.
+  if (!defaultMain) return callback(null, branchesToDelete);
+  
+  getCurrentBranch((err, currentBranch) => {
+    if (err) return callback(err);
+    if (currentBranch.toLowerCase() === defaultMain.toLowerCase()) {
+      // Already on the default main branch.
+      return callback(null, branchesToDelete);
+    }
+    console.log(`You are not currently on the '${defaultMain}' branch. (Current branch: '${currentBranch}')`);
+    prompt.get({
+      name: 'switch',
+      description: `Would you like to switch to '${defaultMain}' branch before cleanup? (Enter 1 for Yes, 2 for No)`,
+      required: true,
+      pattern: /^[12]$/,
+      message: "Please enter 1 or 2"
+    }, (err, result) => {
+      if (err) return callback(err);
+      if (result.switch === "1") {
+        // Switch to defaultMain branch.
+        exec(`git checkout ${defaultMain}`, (err, stdout, stderr) => {
+          if (err) {
+            return callback(new Error(`Failed to switch to ${defaultMain}: ${stderr.trim()}`));
+          }
+          console.log(`Switched to ${defaultMain}.`);
+          callback(null, branchesToDelete);
+        });
+      } else {
+        // Option 2: Remain on the current branch, so remove it from the deletion list.
+        const filtered = branchesToDelete.filter(b => b.toLowerCase() !== currentBranch.toLowerCase());
+        callback(null, filtered);
+      }
+    });
+  });
+}
+
 // --- Main Script Logic ---
 
 function main() {
@@ -136,111 +223,131 @@ function main() {
     process.exit(1);
   }
 
-  getDetachedBranches((err, branches) => {
+  // First, determine the default main branch.
+  getDefaultMainBranch((err, defaultMain) => {
     if (err) {
-      console.error(err.message);
+      console.error("Error determining default branch:", err);
       process.exit(1);
     }
-    if (branches.length === 0) {
-      console.log("No local branches with missing or gone upstreams were found.");
-      process.exit(0);
-    }
-    console.log("The following local branches have no active upstream branch (or their upstream is gone):\n");
-    branches.forEach(b => console.log(`  • ${b}`));
-    console.log(""); // extra newline
-
-    // Present the cleanup options to the user.
-    console.log("Choose one of the following options:");
-    console.log("  1. Delete all such local branches (safe delete)");
-    console.log("  2. Delete all such local branches (forced delete)");
-    console.log("  3. Delete all such local branches except 'main'/'master' (safe delete)");
-    console.log("  4. Cancel");
-
-    prompt.start();
-    prompt.get({
-      name: 'option',
-      description: 'Enter the number for your option',
-      type: 'number',
-      required: true,
-      conform: function(value) {
-        return [1, 2, 3, 4].includes(Number(value));
-      }
-    }, (err, result) => {
+    
+    // Next, get the list of branches that need cleanup.
+    getDetachedBranches((err, branches) => {
       if (err) {
-        console.error("Prompt error:", err);
+        console.error(err.message);
         process.exit(1);
       }
-      const option = Number(result.option);
-      if (option === 4) {
-        console.log("Operation cancelled.");
+      if (branches.length === 0) {
+        console.log("No local branches with missing or gone upstreams were found.");
         process.exit(0);
       }
+      console.log("The following local branches have no active upstream branch (or their upstream is gone):\n");
+      branches.forEach(b => console.log(`  • ${b}`));
+      console.log(""); // extra newline
 
-      // For option 3, filter out main/master from the branches list.
-      let branchesToDelete = branches;
-      if (option === 3) {
-        branchesToDelete = branches.filter(b =>
-          (b.toLowerCase() !== 'main') && (b.toLowerCase() !== 'master')
-        );
-        if (branchesToDelete.length === 0) {
-          console.log("No branches available to delete after filtering out main/master.");
+      // Present the cleanup options to the user.
+      console.log("Choose one of the following options:");
+      console.log("  1. Delete all such local branches (safe delete)");
+      console.log("  2. Delete all such local branches (forced delete)");
+      if (defaultMain) {
+        console.log(`  3. Delete all such local branches except '${defaultMain}' (safe delete)`);
+      } else {
+        console.log("  3. Delete all such local branches except 'main/master' (safe delete)");
+      }
+      console.log("  4. Cancel");
+
+      prompt.start();
+      prompt.get({
+        name: 'option',
+        description: 'Enter the number for your option',
+        type: 'number',
+        required: true,
+        conform: function(value) {
+          return [1, 2, 3, 4].includes(Number(value));
+        }
+      }, (err, result) => {
+        if (err) {
+          console.error("Prompt error:", err);
+          process.exit(1);
+        }
+        const option = Number(result.option);
+        if (option === 4) {
+          console.log("Operation cancelled.");
           process.exit(0);
         }
-      }
-
-      // For options 1 and 3, we start with safe deletion.
-      if (option === 1 || option === 3) {
-        deleteBranches(branchesToDelete, false, (err, failedBranches) => {
+        
+        let branchesToDelete = branches;
+        if (option === 3 && defaultMain) {
+          // Exclude the default main branch from deletion.
+          branchesToDelete = branches.filter(b => b.toLowerCase() !== defaultMain.toLowerCase());
+          if (branchesToDelete.length === 0) {
+            console.log(`No branches available to delete after filtering out '${defaultMain}'.`);
+            process.exit(0);
+          }
+        }
+        
+        // Before deletion, check if the current branch is the default branch.
+        preCleanupCheck(branchesToDelete, defaultMain, (err, finalBranchesToDelete) => {
           if (err) {
-            console.error("Error during branch deletion:", err);
+            console.error("Error during pre-cleanup check:", err);
             process.exit(1);
           }
-          // If some branches could not be deleted safely, prompt to force delete them.
-          if (failedBranches.length > 0) {
-            prompt.get({
-              name: 'force',
-              description: `The following branches were not fully merged and could not be deleted: ${failedBranches.join(", ")}. Do you want to force delete them? (yes/no)`,
-              required: true,
-              pattern: /^(yes|no)$/i,
-              message: "Please enter yes or no"
-            }, (err, result) => {
+          if (finalBranchesToDelete.length === 0) {
+            console.log("No branches available to delete after pre-cleanup adjustments.");
+            process.exit(0);
+          }
+          
+          // Proceed with deletion based on the chosen cleanup option.
+          if (option === 1 || option === 3) {
+            // Safe deletion with potential forced deletion prompt.
+            deleteBranches(finalBranchesToDelete, false, (err, failedBranches) => {
               if (err) {
-                console.error("Prompt error:", err);
+                console.error("Error during branch deletion:", err);
                 process.exit(1);
               }
-              if (result.force.toLowerCase() === 'yes') {
-                // Force delete the branches that failed safe deletion.
-                deleteBranches(failedBranches, true, (err, _) => {
+              if (failedBranches.length > 0) {
+                prompt.get({
+                  name: 'force',
+                  description: `The following branches were not fully merged and could not be deleted: ${failedBranches.join(", ")}. Do you want to force delete them? (yes/no)`,
+                  required: true,
+                  pattern: /^(yes|no)$/i,
+                  message: "Please enter yes or no"
+                }, (err, result) => {
                   if (err) {
-                    console.error("Error during forced branch deletion:", err);
+                    console.error("Prompt error:", err);
                     process.exit(1);
                   }
-                  console.log("Forced deletion completed.");
-                  process.exit(0);
+                  if (result.force.toLowerCase() === 'yes') {
+                    deleteBranches(failedBranches, true, (err, _) => {
+                      if (err) {
+                        console.error("Error during forced branch deletion:", err);
+                        process.exit(1);
+                      }
+                      console.log("Forced deletion completed.");
+                      process.exit(0);
+                    });
+                  } else {
+                    console.log("Cleanup operation completed with safe deletion.");
+                    process.exit(0);
+                  }
                 });
               } else {
-                console.log("Cleanup operation completed with safe deletion.");
+                console.log("Cleanup operation completed.");
                 process.exit(0);
               }
             });
-          } else {
-            console.log("Cleanup operation completed.");
-            process.exit(0);
+          } else if (option === 2) {
+            // Forced deletion immediately.
+            deleteBranches(finalBranchesToDelete, true, (err, _) => {
+              if (err) {
+                console.error("Error during forced branch deletion:", err);
+                process.exit(1);
+              }
+              console.log("Forced deletion completed.");
+              process.exit(0);
+            });
           }
         });
-      }
-
-      // For option 2, forced deletion is used immediately.
-      if (option === 2) {
-        deleteBranches(branchesToDelete, true, (err, _) => {
-          if (err) {
-            console.error("Error during forced branch deletion:", err);
-            process.exit(1);
-          }
-          console.log("Forced deletion completed.");
-          process.exit(0);
-        });
-      }
+      });
     });
   });
 }
