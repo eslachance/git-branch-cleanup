@@ -1,35 +1,18 @@
 #!/usr/bin/env node
 /**
- * git-cleanup.js
+ * git-branch-cleanup
  *
  * A Node.js CLI tool to help clean up local Git branches whose upstream is missing
  * or has been deleted.
  *
- * It now also detects your repository’s default main branch:
- *   - It checks for local "main" and "master" branches.
- *   - If both exist, it prompts you to choose which one you actually use.
- *
- * Right before cleanup, if you’re not currently on that default branch,
- * you’re prompted to either switch to it (so you can clean up the other branches)
- * or to remain on your current branch (in which case it is excluded from cleanup).
- *
- * Cleanup options:
- *   1. Delete all such local branches (safe delete)
- *   2. Delete all such local branches (forced delete)
- *   3. Delete all such local branches except your default branch (safe delete)
- *   4. Cancel
- *
- * In safe deletion mode, if a branch isn’t fully merged, a friendly error is shown.
- * When the safe deletion process completes, you’re asked whether you’d like to force-delete
- * those branches that failed the safe deletion.
- *
- * To install the "prompt" module, run:
- *    npm install prompt
  */
 
 const prompt = require('prompt');
 const { exec } = require('child_process');
 const fs = require('fs');
+
+// Global variable to ensure the disclaimer is only shown once.
+let disclaimerConfirmed = false;
 
 // --- Git Repository Checks ---
 
@@ -169,6 +152,7 @@ function deleteBranches(branches, forced, callback) {
 /**
  * Before performing deletion, check if the current branch matches the default main branch.
  * If not, prompt the user:
+ *
  *   "You are not currently on the '<defaultMain>' branch.
  *    Would you like to switch to '<defaultMain>' before cleanup?
  *      1. Yes, switch to '<defaultMain>' branch to clean up this one.
@@ -212,6 +196,39 @@ function preCleanupCheck(branchesToDelete, defaultMain, callback) {
         callback(null, filtered);
       }
     });
+  });
+}
+
+/**
+ * Show the disclaimer message (in bold red) and ask for confirmation.
+ * The disclaimer is shown only once per execution.
+ */
+function confirmDisclaimer(callback) {
+  if (disclaimerConfirmed) {
+    callback();
+    return;
+  }
+  // ANSI escape codes for red (31) and bold (1)
+  const warningMessage = "\x1b[31m\x1b[1mWARNING: Branches deleted locally cannot be recovered. If you have any local unsaved work that has not been pushed to a remote repository, IT WILL BE LOST. Use this tool at your own risk. The maintainers assume no responsibility for any data loss. Always review the branches marked for deletion before confirming the cleanup process.\x1b[0m";
+  console.log(warningMessage);
+  prompt.get({
+    name: 'confirm',
+    description: 'Do you wish to proceed? (yes/no)',
+    required: true,
+    pattern: /^(yes|no)$/i,
+    message: "Please enter yes or no"
+  }, (err, result) => {
+    if (err) {
+      console.error("Prompt error:", err);
+      process.exit(1);
+    }
+    if (result.confirm.toLowerCase() === 'yes') {
+      disclaimerConfirmed = true;
+      callback();
+    } else {
+      console.log("Cleanup operation cancelled by user.");
+      process.exit(0);
+    }
   });
 }
 
@@ -296,56 +313,59 @@ function main() {
             process.exit(0);
           }
           
-          // Proceed with deletion based on the chosen cleanup option.
-          if (option === 1 || option === 3) {
-            // Safe deletion with potential forced deletion prompt.
-            deleteBranches(finalBranchesToDelete, false, (err, failedBranches) => {
-              if (err) {
-                console.error("Error during branch deletion:", err);
-                process.exit(1);
-              }
-              if (failedBranches.length > 0) {
-                prompt.get({
-                  name: 'force',
-                  description: `The following branches were not fully merged and could not be deleted: ${failedBranches.join(", ")}. Do you want to force delete them? (yes/no)`,
-                  required: true,
-                  pattern: /^(yes|no)$/i,
-                  message: "Please enter yes or no"
-                }, (err, result) => {
-                  if (err) {
-                    console.error("Prompt error:", err);
-                    process.exit(1);
-                  }
-                  if (result.force.toLowerCase() === 'yes') {
-                    deleteBranches(failedBranches, true, (err, _) => {
-                      if (err) {
-                        console.error("Error during forced branch deletion:", err);
-                        process.exit(1);
-                      }
-                      console.log("Forced deletion completed.");
+          // Show the disclaimer once before starting deletion.
+          confirmDisclaimer(() => {
+            // Proceed with deletion based on the chosen cleanup option.
+            if (option === 1 || option === 3) {
+              // Safe deletion with potential forced deletion prompt.
+              deleteBranches(finalBranchesToDelete, false, (err, failedBranches) => {
+                if (err) {
+                  console.error("Error during branch deletion:", err);
+                  process.exit(1);
+                }
+                if (failedBranches.length > 0) {
+                  prompt.get({
+                    name: 'force',
+                    description: `The following branches were not fully merged and could not be deleted: ${failedBranches.join(", ")}. Do you want to force delete them? (yes/no)`,
+                    required: true,
+                    pattern: /^(yes|no)$/i,
+                    message: "Please enter yes or no"
+                  }, (err, result) => {
+                    if (err) {
+                      console.error("Prompt error:", err);
+                      process.exit(1);
+                    }
+                    if (result.force.toLowerCase() === 'yes') {
+                      deleteBranches(failedBranches, true, (err, _) => {
+                        if (err) {
+                          console.error("Error during forced branch deletion:", err);
+                          process.exit(1);
+                        }
+                        console.log("Forced deletion completed.");
+                        process.exit(0);
+                      });
+                    } else {
+                      console.log("Cleanup operation completed with safe deletion.");
                       process.exit(0);
-                    });
-                  } else {
-                    console.log("Cleanup operation completed with safe deletion.");
-                    process.exit(0);
-                  }
-                });
-              } else {
-                console.log("Cleanup operation completed.");
+                    }
+                  });
+                } else {
+                  console.log("Cleanup operation completed.");
+                  process.exit(0);
+                }
+              });
+            } else if (option === 2) {
+              // Forced deletion immediately.
+              deleteBranches(finalBranchesToDelete, true, (err, _) => {
+                if (err) {
+                  console.error("Error during forced branch deletion:", err);
+                  process.exit(1);
+                }
+                console.log("Forced deletion completed.");
                 process.exit(0);
-              }
-            });
-          } else if (option === 2) {
-            // Forced deletion immediately.
-            deleteBranches(finalBranchesToDelete, true, (err, _) => {
-              if (err) {
-                console.error("Error during forced branch deletion:", err);
-                process.exit(1);
-              }
-              console.log("Forced deletion completed.");
-              process.exit(0);
-            });
-          }
+              });
+            }
+          });
         });
       });
     });

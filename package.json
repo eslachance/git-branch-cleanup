@@ -1,6 +1,6 @@
 {
   "name": "git-branch-cleanup",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "main": "src/index.js",
   "bin": {
     "git-branch-cleanup": "src/index.js"
@@ -9,10 +9,13 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "author": "Eric-Sebastien Lachance <eslachance@gmail.com> (https://alterion.dev/)",
+  "description": "A Node.js CLI tool to help clean up your local Git branches that have no active upstream branch or whose upstream branch is gone.",
   "dependencies": {
     "prompt": "^1.3.0"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">= 6.0.0"
   }
 }
