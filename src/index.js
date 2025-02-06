@@ -175,13 +175,13 @@ function preCleanupCheck(branchesToDelete, defaultMain, callback) {
     console.log(`You are not currently on the '${defaultMain}' branch. (Current branch: '${currentBranch}')`);
     prompt.get({
       name: 'switch',
-      description: `Would you like to switch to '${defaultMain}' branch before cleanup? (Enter 1 for Yes, 2 for No)`,
+      description: `Would you like to switch to '${defaultMain}' branch before cleanup? (Yes/No)`,
       required: true,
-      pattern: /^[12]$/,
-      message: "Please enter 1 or 2"
+      pattern: /^(yes|no|y|n)$/i,
+      message: "Please enter yes or no"
     }, (err, result) => {
       if (err) return callback(err);
-      if (result.switch === "1") {
+      if (result.switch.toLowerCase() === 'yes' || result.switch.toLowerCase() === 'y') {
         // Switch to defaultMain branch.
         exec(`git checkout ${defaultMain}`, (err, stdout, stderr) => {
           if (err) {
@@ -213,16 +213,16 @@ function confirmDisclaimer(callback) {
   console.log(warningMessage);
   prompt.get({
     name: 'confirm',
-    description: 'Do you wish to proceed? (yes/no)',
+    description: 'Do you wish to proceed? (Yes/No)',
     required: true,
-    pattern: /^(yes|no)$/i,
+    pattern: /^(yes|no|y|n)$/i,
     message: "Please enter yes or no"
   }, (err, result) => {
     if (err) {
       console.error("Prompt error:", err);
       process.exit(1);
     }
-    if (result.confirm.toLowerCase() === 'yes') {
+    if (result.confirm.toLowerCase() === 'yes' || result.confirm.toLowerCase() === 'y') {
       disclaimerConfirmed = true;
       callback();
     } else {
@@ -263,8 +263,8 @@ function main() {
 
       // Present the cleanup options to the user.
       console.log("Choose one of the following options:");
-      console.log("  1. Delete all such local branches (safe delete)");
-      console.log("  2. Delete all such local branches (forced delete)");
+      console.log("  1. Delete all detached local branches (safe delete)");
+      console.log("  2. Delete all detached local branches (forced delete)");
       if (defaultMain) {
         console.log(`  3. Delete all such local branches except '${defaultMain}' (safe delete)`);
       } else {
@@ -326,16 +326,16 @@ function main() {
                 if (failedBranches.length > 0) {
                   prompt.get({
                     name: 'force',
-                    description: `The following branches were not fully merged and could not be deleted: ${failedBranches.join(", ")}. Do you want to force delete them? (yes/no)`,
+                    description: `The above branches were not fully merged and could not be deleted. Do you want to force delete them? (Yes/No)`,
                     required: true,
-                    pattern: /^(yes|no)$/i,
+                    pattern: /^(yes|no|y|n)$/i,
                     message: "Please enter yes or no"
                   }, (err, result) => {
                     if (err) {
                       console.error("Prompt error:", err);
                       process.exit(1);
                     }
-                    if (result.force.toLowerCase() === 'yes') {
+                    if (result.force.toLowerCase() === 'yes' || result.force.toLowerCase() === 'y') {
                       deleteBranches(failedBranches, true, (err, _) => {
                         if (err) {
                           console.error("Error during forced branch deletion:", err);
