@@ -1,6 +1,6 @@
 {
   "name": "git-branch-cleanup",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "main": "src/index.js",
   "bin": {
     "git-branch-cleanup": "src/index.js"
@@ -19,6 +19,6 @@
     "node": ">= 6.0.0"
   },
   "publishConfig": {
-   "registry": "https://registry.npmjs.org"
+    "registry": "https://registry.npmjs.org"
   }
 }
